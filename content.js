@@ -24,19 +24,28 @@
     if ('panelWidth' in changes) state.width = changes.panelWidth.newValue;
   });
 
-  // Pages where interception applies: repo issue lists and the global
-  // issues dashboard. Checked at click time because GitHub is an SPA.
-  function onIssueListPage() {
-    const p = location.pathname.replace(/\/$/, '');
-    return p === '/issues' || /^\/[^/]+\/[^/]+\/issues$/.test(p);
-  }
-
   const ISSUE_PATH_RE = /^\/[^/]+\/[^/]+\/issues\/\d+$/;
+
+  // Where interception applies. Checked at click time because GitHub is an
+  // SPA: issue lists, the global issues dashboard, issue pages (linked
+  // issues, sub-issues, ...), and links inside the panel itself.
+  function interceptionContext(a) {
+    if (root && root.contains(a)) return 'panel';
+    const p = location.pathname.replace(/\/$/, '');
+    if (p === '/issues' || /^\/[^/]+\/[^/]+\/issues$/.test(p)) return 'list';
+    if (ISSUE_PATH_RE.test(p)) return 'issue-page';
+    return null;
+  }
 
   // ---- Panel DOM (created lazily) ----
   let root = null;
   let body = null;
   let fullLink = null;
+  let backBtn = null;
+
+  // In-panel navigation history (issue links clicked inside the panel).
+  let hist = [];
+  let currentHref = null;
 
   function ensurePanel() {
     if (root) return;
@@ -48,7 +57,10 @@
       <div class="gisp-panel" role="dialog" aria-label="Issue side panel">
         <div class="gisp-resizer" title="Drag to resize"></div>
         <div class="gisp-header">
-          <a class="gisp-full" href="#">Open full page &#8599;</a>
+          <div class="gisp-header-left">
+            <button class="gisp-back" type="button" aria-label="Back" hidden>&#8592;</button>
+            <a class="gisp-full" href="#">Open full page &#8599;</a>
+          </div>
           <button class="gisp-close" type="button" aria-label="Close">&#10005;</button>
         </div>
         <div class="gisp-body"></div>
@@ -57,11 +69,16 @@
 
     body = root.querySelector('.gisp-body');
     fullLink = root.querySelector('.gisp-full');
+    backBtn = root.querySelector('.gisp-back');
     const panel = root.querySelector('.gisp-panel');
     panel.style.width = state.width + 'px';
 
     root.querySelector('.gisp-backdrop').addEventListener('click', closePanel);
     root.querySelector('.gisp-close').addEventListener('click', closePanel);
+    backBtn.addEventListener('click', () => {
+      const prev = hist.pop();
+      if (prev) openPanel(prev);
+    });
     window.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' && root.classList.contains('gisp-open')) closePanel();
     });
@@ -192,7 +209,7 @@
       (issue.backTimelineItems?.edges?.length ?? 0);
     const truncated =
       total > loaded
-        ? `<div class="gisp-truncated"><a href="${esc(href)}">View full timeline on the issue page &#8599;</a></div>`
+        ? `<div class="gisp-truncated"><a href="${esc(href)}" data-gisp-nav="page">View full timeline on the issue page &#8599;</a></div>`
         : '';
 
     body.innerHTML = `
@@ -224,8 +241,15 @@
 
   let openSeq = 0;
 
-  async function openPanel(href) {
+  // opts.reset: fresh browsing session (opened from the page, not the panel)
+  // opts.pushCurrent: keep the current issue on the back stack
+  async function openPanel(href, opts = {}) {
     ensurePanel();
+    if (opts.reset) hist = [];
+    else if (opts.pushCurrent && currentHref && currentHref !== href) hist.push(currentHref);
+    currentHref = href;
+    backBtn.hidden = hist.length === 0;
+
     const seq = ++openSeq;
     fullLink.href = href;
     body.innerHTML = '<div class="gisp-loading"><div class="gisp-spinner"></div></div>';
@@ -255,11 +279,13 @@
       if (e.defaultPrevented) return;
       // Modifier / non-left clicks keep their normal behavior (new tab etc.)
       if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-      if (!onIssueListPage()) return;
 
       const a = e.target.closest && e.target.closest('a[href]');
       if (!a) return;
-      if (root && root.contains(a)) return; // links inside the panel behave normally
+      if (a.dataset.gispNav === 'page') return; // explicit "go to full page" links
+
+      const ctx = interceptionContext(a);
+      if (!ctx) return;
 
       let url;
       try {
@@ -269,10 +295,12 @@
       }
       if (url.origin !== location.origin) return;
       if (!ISSUE_PATH_RE.test(url.pathname)) return;
+      // On an issue page, self-links (e.g. comment anchors) behave normally.
+      if (ctx === 'issue-page' && url.pathname === location.pathname) return;
 
       e.preventDefault();
       e.stopPropagation();
-      openPanel(url.href);
+      openPanel(url.href, ctx === 'panel' ? { pushCurrent: true } : { reset: true });
     },
     true
   );

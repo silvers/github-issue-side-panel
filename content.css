@@ -41,6 +41,28 @@
   flex: none;
 }
 
+#gisp-root .gisp-header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#gisp-root .gisp-back {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  padding: 4px 8px;
+  color: var(--fgColor-muted, #59636e);
+  border-radius: 6px;
+}
+
+#gisp-root .gisp-back:hover {
+  background: var(--bgColor-neutral-muted, #eaeef2);
+  color: var(--fgColor-default, #1f2328);
+}
+
 #gisp-root .gisp-full {
   color: var(--fgColor-accent, #0969da);
   text-decoration: none;
