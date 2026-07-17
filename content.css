@@ -1,0 +1,219 @@
+#gisp-root {
+  display: none;
+}
+
+#gisp-root.gisp-open {
+  display: block;
+}
+
+#gisp-root .gisp-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  z-index: 2147483000;
+}
+
+#gisp-root .gisp-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  height: 100vh;
+  width: 720px;
+  max-width: calc(100vw - 80px);
+  min-width: 400px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bgColor-default, #ffffff);
+  color: var(--fgColor-default, #1f2328);
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.25);
+  z-index: 2147483001;
+}
+
+#gisp-root .gisp-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--borderColor-default, #d0d7de);
+  background: var(--bgColor-muted, #f6f8fa);
+  font-size: 13px;
+  flex: none;
+}
+
+#gisp-root .gisp-full {
+  color: var(--fgColor-accent, #0969da);
+  text-decoration: none;
+}
+
+#gisp-root .gisp-full:hover {
+  text-decoration: underline;
+}
+
+#gisp-root .gisp-close {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 4px 8px;
+  color: var(--fgColor-muted, #59636e);
+  border-radius: 6px;
+}
+
+#gisp-root .gisp-close:hover {
+  background: var(--bgColor-neutral-muted, #eaeef2);
+  color: var(--fgColor-default, #1f2328);
+}
+
+#gisp-root .gisp-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 24px 40px;
+}
+
+#gisp-root .gisp-resizer {
+  position: absolute;
+  top: 0;
+  left: -4px;
+  width: 8px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 2;
+}
+
+/* ---- Issue content ---- */
+
+#gisp-root .gisp-title {
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.3;
+  margin: 0 0 8px;
+}
+
+#gisp-root .gisp-title .gisp-muted {
+  font-weight: 400;
+}
+
+#gisp-root .gisp-muted {
+  color: var(--fgColor-muted, #59636e);
+  font-weight: 400;
+}
+
+#gisp-root .gisp-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+#gisp-root .gisp-avatar {
+  border-radius: 50%;
+  vertical-align: middle;
+}
+
+#gisp-root .gisp-state {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 2em;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+#gisp-root .gisp-state-open {
+  background: var(--bgColor-open-emphasis, #1a7f37);
+}
+
+#gisp-root .gisp-state-closed {
+  background: var(--bgColor-done-emphasis, #8250df);
+}
+
+#gisp-root .gisp-state-notplanned {
+  background: var(--bgColor-neutral-emphasis, #59636e);
+}
+
+#gisp-root .gisp-labels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+#gisp-root .gisp-label {
+  display: inline-block;
+  padding: 0 8px;
+  border-radius: 2em;
+  font-size: 12px;
+  line-height: 20px;
+  border: 1px solid var(--gisp-label-color);
+  color: var(--gisp-label-color);
+  background: color-mix(in srgb, var(--gisp-label-color) 18%, transparent);
+}
+
+#gisp-root .gisp-assignees {
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+
+#gisp-root .gisp-md {
+  font-size: 14px;
+  margin-top: 12px;
+}
+
+#gisp-root .gisp-issue-body {
+  padding: 12px 0 16px;
+  border-bottom: 1px solid var(--borderColor-default, #d0d7de);
+}
+
+#gisp-root .gisp-comment {
+  margin-top: 16px;
+  border: 1px solid var(--borderColor-default, #d0d7de);
+  border-radius: 6px;
+}
+
+#gisp-root .gisp-comment-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  font-size: 13px;
+  background: var(--bgColor-muted, #f6f8fa);
+  border-bottom: 1px solid var(--borderColor-default, #d0d7de);
+  border-radius: 6px 6px 0 0;
+}
+
+#gisp-root .gisp-comment .gisp-md {
+  margin: 0;
+  padding: 12px;
+}
+
+#gisp-root .gisp-truncated {
+  margin-top: 16px;
+  font-size: 13px;
+}
+
+/* ---- Loading spinner ---- */
+
+#gisp-root .gisp-loading {
+  display: flex;
+  justify-content: center;
+  padding-top: 80px;
+}
+
+#gisp-root .gisp-spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid var(--borderColor-default, #d0d7de);
+  border-top-color: var(--fgColor-accent, #0969da);
+  border-radius: 50%;
+  animation: gisp-spin 0.8s linear infinite;
+}
+
+@keyframes gisp-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

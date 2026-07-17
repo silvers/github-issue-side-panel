@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "GitHub Issue Side Panel",
+  "version": "1.1.0",
+  "description": "Open issues from GitHub issue lists in a slide-in side panel, like GitHub Projects",
+  "permissions": ["storage"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "GitHub Issue Side Panel: click to toggle on/off"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://github.com/*"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_start"
+    }
+  ]
+}
