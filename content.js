@@ -9,9 +9,9 @@
 
   if (window.top !== window) return;
 
-  const state = { enabled: true, width: 720 };
+  const state = { enabled: true, width: 960 };
 
-  chrome.storage.sync.get({ enabled: true, panelWidth: 720 }, (v) => {
+  chrome.storage.sync.get({ enabled: true, panelWidth: 960 }, (v) => {
     state.enabled = v.enabled;
     state.width = v.panelWidth;
   });
@@ -156,13 +156,21 @@
     });
   }
 
+  // Octicons, as used by GitHub's own state badges.
+  const ICONS = {
+    open: '<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M8 9.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3Z"></path><path d="M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0ZM1.5 8a6.5 6.5 0 1 0 13 0 6.5 6.5 0 0 0-13 0Z"></path></svg>',
+    closed: '<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M11.28 6.78a.75.75 0 0 0-1.06-1.06L7.25 8.69 5.78 7.22a.75.75 0 0 0-1.06 1.06l2 2a.75.75 0 0 0 1.06 0l3.5-3.5Z"></path><path d="M16 8A8 8 0 1 1 0 8a8 8 0 0 1 16 0Zm-1.5 0a6.5 6.5 0 1 0-13 0 6.5 6.5 0 0 0 13 0Z"></path></svg>',
+    skip: '<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0ZM1.5 8c0 1.44.468 2.767 1.26 3.842L11.842 2.76A6.47 6.47 0 0 0 8 1.5 6.5 6.5 0 0 0 1.5 8Zm13 0c0-1.44-.468-2.767-1.26-3.842L4.158 13.24A6.471 6.471 0 0 0 8 14.5 6.5 6.5 0 0 0 14.5 8Z"></path></svg>',
+  };
+
   function stateBadge(issue) {
     const st = issue.state;
     const reason = issue.stateReason;
-    if (st === 'OPEN') return '<span class="gisp-state gisp-state-open">Open</span>';
+    if (st === 'OPEN')
+      return `<span class="gisp-state gisp-state-open">${ICONS.open} Open</span>`;
     if (reason === 'NOT_PLANNED' || reason === 'DUPLICATE')
-      return '<span class="gisp-state gisp-state-notplanned">Closed</span>';
-    return '<span class="gisp-state gisp-state-closed">Closed</span>';
+      return `<span class="gisp-state gisp-state-notplanned">${ICONS.skip} Closed</span>`;
+    return `<span class="gisp-state gisp-state-closed">${ICONS.closed} Closed</span>`;
   }
 
   // Issue type colors are a GraphQL enum, not hex values.
@@ -175,6 +183,24 @@
     if (!t?.name) return '';
     const color = TYPE_COLORS[t.color] || TYPE_COLORS.GRAY;
     return `<span class="gisp-label" style="--gisp-label-color:${color}" title="${esc(t.description || '')}">${esc(t.name)}</span>`;
+  }
+
+  // Project single-select values (e.g. Status) use the same color enum.
+  function fieldChip(v) {
+    if (!v?.name) return '';
+    const color = TYPE_COLORS[v.color] || TYPE_COLORS.GRAY;
+    return `<span class="gisp-label" style="--gisp-label-color:${color}">${esc(v.name)}</span>`;
+  }
+
+  // Org-level issue fields; shape is defensive since it isn't documented.
+  function issueFields(issue) {
+    return (issue.issueFieldValues?.nodes || [])
+      .map((n) => {
+        const name = n?.field?.name;
+        const value = n?.name ?? n?.text ?? n?.title ?? n?.number ?? n?.date ?? n?.value;
+        return name && value != null ? { name, value: String(value) } : null;
+      })
+      .filter(Boolean);
   }
 
   function labelChip(l) {
@@ -202,27 +228,44 @@
     return comments;
   }
 
+  function commentBox(actor, dateLabel, bodyHTML) {
+    return `
+      <div class="gisp-comment">
+        <div class="gisp-comment-head">
+          ${avatar(actor)}
+          <b>${esc(actor?.login || 'ghost')}</b>
+          <span class="gisp-muted">${dateLabel}</span>
+        </div>
+        <div class="markdown-body gisp-md">${bodyHTML}</div>
+      </div>`;
+  }
+
+  function sideSection(title, contentHtml) {
+    if (!contentHtml) return '';
+    return `
+      <div class="gisp-side-section">
+        <div class="gisp-side-title">${title}</div>
+        ${contentHtml}
+      </div>`;
+  }
+
   function renderIssue(issue, href) {
     const labels = (issue.labels?.edges || []).map((e) => e.node).filter(Boolean);
     const assignees = issue.assignedActors?.nodes || [];
-    const projects = (issue.projectItems?.edges || [])
-      .map((e) => e?.node?.project)
-      .filter((p) => p?.title);
+    const projectItems = (issue.projectItems?.edges || [])
+      .map((e) => e?.node)
+      .filter((n) => n?.project?.title && !n.isArchived);
+    const fields = issueFields(issue);
     const comments = collectComments(issue);
     const author = issue.author || {};
 
+    const descBox = commentBox(
+      author,
+      `opened on ${fmtDate(issue.createdAt)}`,
+      issue.bodyHTML || '<i>No description provided.</i>'
+    );
     const commentHtml = comments
-      .map(
-        (c) => `
-        <div class="gisp-comment">
-          <div class="gisp-comment-head">
-            ${avatar(c.author)}
-            <b>${esc(c.author?.login || 'ghost')}</b>
-            <span class="gisp-muted">${fmtDate(c.createdAt)}</span>
-          </div>
-          <div class="markdown-body gisp-md">${c.bodyHTML || ''}</div>
-        </div>`
-      )
+      .map((c) => commentBox(c.author, fmtDate(c.createdAt), c.bodyHTML || ''))
       .join('');
 
     // The preloaded payload only carries the head/tail of long timelines.
@@ -235,38 +278,55 @@
         ? `<div class="gisp-truncated"><a href="${esc(href)}" data-gisp-nav="page">View full timeline on the issue page &#8599;</a></div>`
         : '';
 
+    // Right-hand sidebar, like the real issue page. Empty sections are omitted.
+    const sidebar =
+      sideSection(
+        'Assignees',
+        assignees
+          .map((a) => `<div class="gisp-side-item">${avatar(a)} ${esc(a.login)}</div>`)
+          .join('')
+      ) +
+      sideSection('Labels', labels.length ? `<div class="gisp-labels">${labels.map(labelChip).join('')}</div>` : '') +
+      sideSection('Type', typeChip(issue.issueType)) +
+      sideSection(
+        'Projects',
+        projectItems
+          .map((n) => {
+            const p = n.project;
+            const link = p.url
+              ? `<a href="${esc(p.url)}">${esc(p.title)}</a>`
+              : esc(p.title);
+            const status = n.fieldValueByName ? ` ${fieldChip(n.fieldValueByName)}` : '';
+            return `<div class="gisp-side-item">${link}${status}</div>`;
+          })
+          .join('')
+      ) +
+      sideSection('Milestone', issue.milestone ? `<div class="gisp-side-item">${esc(issue.milestone.title)}</div>` : '') +
+      sideSection(
+        'Fields',
+        fields
+          .map((f) => `<div class="gisp-side-item">${esc(f.name)}: <b>${esc(f.value)}</b></div>`)
+          .join('')
+      );
+
     body.innerHTML = `
       <div class="gisp-issue">
         <h2 class="gisp-title">${issue.titleHTML || esc(issue.title)}
           <span class="gisp-muted">#${issue.number}</span></h2>
         <div class="gisp-meta">
           ${stateBadge(issue)}
-          ${avatar(author)}
-          <b>${esc(author.login || 'ghost')}</b>
-          <span class="gisp-muted">opened on ${fmtDate(issue.createdAt)}
+          <span class="gisp-muted"><b>${esc(author.login || 'ghost')}</b>
+            opened on ${fmtDate(issue.createdAt)}
             &middot; ${comments.length} comment${comments.length === 1 ? '' : 's'}</span>
         </div>
-        ${
-          issue.issueType?.name || labels.length
-            ? `<div class="gisp-labels">${typeChip(issue.issueType)}${labels.map(labelChip).join('')}</div>`
-            : ''
-        }
-        ${
-          assignees.length
-            ? `<div class="gisp-assignees gisp-muted">Assignees:
-                ${assignees.map((a) => `${avatar(a)} ${esc(a.login)}`).join(' ')}</div>`
-            : ''
-        }
-        ${
-          projects.length
-            ? `<div class="gisp-assignees gisp-muted">Projects:
-                ${projects.map((p) => (p.url ? `<a href="${esc(p.url)}">${esc(p.title)}</a>` : esc(p.title))).join(', ')}</div>`
-            : ''
-        }
-        ${issue.milestone ? `<div class="gisp-assignees gisp-muted">Milestone: ${esc(issue.milestone.title)}</div>` : ''}
-        <div class="markdown-body gisp-md gisp-issue-body">${issue.bodyHTML || '<i>No description provided.</i>'}</div>
-        ${commentHtml}
-        ${truncated}
+        <div class="gisp-columns">
+          <div class="gisp-main">
+            ${descBox}
+            ${commentHtml}
+            ${truncated}
+          </div>
+          ${sidebar ? `<div class="gisp-sidebar">${sidebar}</div>` : ''}
+        </div>
       </div>`;
   }
 
