@@ -157,35 +157,6 @@
   background: var(--bgColor-neutral-emphasis, #59636e);
 }
 
-#gisp-root .gisp-state-merged {
-  background: var(--bgColor-done-emphasis, #8250df);
-}
-
-#gisp-root .gisp-state-closedpr {
-  background: var(--bgColor-closed-emphasis, #cf222e);
-}
-
-#gisp-root .gisp-branches {
-  font-size: 13px;
-  margin-bottom: 8px;
-}
-
-#gisp-root .gisp-branches code {
-  background: var(--bgColor-neutral-muted, #eaeef2);
-  border-radius: 6px;
-  padding: 1px 6px;
-  font-size: 12px;
-}
-
-#gisp-root .gisp-note {
-  margin-top: 16px;
-  padding: 12px;
-  border: 1px solid var(--borderColor-default, #d0d7de);
-  border-radius: 6px;
-  background: var(--bgColor-muted, #f6f8fa);
-  font-size: 13px;
-}
-
 #gisp-root .gisp-labels {
   display: flex;
   flex-wrap: wrap;

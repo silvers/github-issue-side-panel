@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "GitHub Issue Side Panel",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Open issues from GitHub issue lists in a slide-in side panel, like GitHub Projects",
   "permissions": ["storage"],
   "background": {
