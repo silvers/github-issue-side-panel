@@ -1,32 +1,45 @@
 // GitHub Issue Side Panel
-// Intercepts clicks on issue links on issue-list pages, fetches the issue
-// page HTML (same-origin, with the user's session), extracts the embedded
-// JSON payload GitHub ships for its React app, and renders the issue in a
-// slide-in panel — like the GitHub Projects side panel.
+//
+// Intercepts clicks on issue links (on issue lists, issue/PR pages, and
+// inside the panel itself), fetches the issue page HTML same-origin with
+// the user's session, extracts the JSON payload GitHub embeds for its
+// React app, and renders the issue in a slide-in side panel.
+//
+// Sections: Settings / Interception rules / Panel UI / Data extraction /
+// Rendering / Click handler.
 
 (() => {
   'use strict';
 
+  // Top frame only.
   if (window.top !== window) return;
 
-  const state = { enabled: true, width: 960 };
+  // ---------------------------------------------------------------- Settings
 
-  chrome.storage.sync.get({ enabled: true, panelWidth: 960 }, (v) => {
-    state.enabled = v.enabled;
-    state.width = v.panelWidth;
+  const DEFAULT_WIDTH = 960;
+  const MIN_WIDTH = 400;
+  const EDGE_MARGIN = 80; // page area kept visible when the panel is huge
+
+  const settings = { enabled: true, width: DEFAULT_WIDTH };
+
+  chrome.storage.sync.get({ enabled: true, panelWidth: DEFAULT_WIDTH }, (v) => {
+    settings.enabled = v.enabled;
+    settings.width = v.panelWidth;
   });
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'sync') return;
     if ('enabled' in changes) {
-      state.enabled = changes.enabled.newValue;
-      if (!state.enabled) closePanel();
+      settings.enabled = changes.enabled.newValue;
+      if (!settings.enabled) closePanel();
     }
-    if ('panelWidth' in changes) state.width = changes.panelWidth.newValue;
+    if ('panelWidth' in changes) settings.width = changes.panelWidth.newValue;
   });
 
-  // Only issues open in the panel (PR pages don't preload their
-  // conversation data, so PRs always navigate normally).
-  const ITEM_PATH_RE = /^\/[^/]+\/[^/]+\/issues\/\d+$/;
+  // ---------------------------------------------- Where interception applies
+
+  // Only issue links open in the panel. PR pages don't preload their
+  // conversation data, so PR links always navigate normally.
+  const ISSUE_PATH_RE = /^\/[^/]+\/[^/]+\/issues\/\d+$/;
 
   // "owner/repo#number" — identifies an issue/PR regardless of tab suffix.
   function itemKey(pathname) {
@@ -34,9 +47,7 @@
     return m ? `${m[1]}/${m[2]}#${m[3]}` : null;
   }
 
-  // Where interception applies. Checked at click time because GitHub is an
-  // SPA: issue lists, the dashboards, issue/PR pages (linked issues,
-  // sub-issues, ...), and links inside the panel itself.
+  // Checked at click time because GitHub is an SPA.
   function interceptionContext(a) {
     if (root && root.contains(a)) return 'panel';
     const p = location.pathname.replace(/\/$/, '');
@@ -45,7 +56,8 @@
     return null;
   }
 
-  // ---- Panel DOM (created lazily) ----
+  // ---------------------------------------------------------------- Panel UI
+
   let root = null;
   let body = null;
   let fullLink = null;
@@ -79,7 +91,7 @@
     fullLink = root.querySelector('.gisp-full');
     backBtn = root.querySelector('.gisp-back');
     const panel = root.querySelector('.gisp-panel');
-    panel.style.width = state.width + 'px';
+    panel.style.width = settings.width + 'px';
 
     root.querySelector('.gisp-backdrop').addEventListener('click', closePanel);
     root.querySelector('.gisp-close').addEventListener('click', closePanel);
@@ -91,14 +103,16 @@
       if (e.key === 'Escape' && root.classList.contains('gisp-open')) closePanel();
     });
 
-    // ---- Resize by dragging the left edge ----
-    const resizer = root.querySelector('.gisp-resizer');
+    initResizer(panel, root.querySelector('.gisp-resizer'));
+  }
+
+  function initResizer(panel, resizer) {
     resizer.addEventListener('mousedown', (e) => {
       e.preventDefault();
       const onMove = (ev) => {
         const w = Math.min(
-          Math.max(window.innerWidth - ev.clientX, 400),
-          window.innerWidth - 80
+          Math.max(window.innerWidth - ev.clientX, MIN_WIDTH),
+          window.innerWidth - EDGE_MARGIN
         );
         panel.style.width = w + 'px';
       };
@@ -113,16 +127,48 @@
     });
   }
 
+  let openSeq = 0;
+
+  // opts.reset: fresh browsing session (opened from the page, not the panel)
+  // opts.pushCurrent: keep the current issue on the back stack
+  async function openPanel(href, opts = {}) {
+    ensurePanel();
+    if (opts.reset) hist = [];
+    else if (opts.pushCurrent && currentHref && currentHref !== href) hist.push(currentHref);
+    currentHref = href;
+    backBtn.hidden = hist.length === 0;
+
+    const seq = ++openSeq;
+    fullLink.href = href;
+    body.innerHTML = '<div class="gisp-loading"><div class="gisp-spinner"></div></div>';
+    root.classList.add('gisp-open');
+
+    try {
+      const res = await fetch(href, { headers: { Accept: 'text/html' } });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const issue = extractIssue(await res.text());
+      if (seq !== openSeq) return; // another issue was opened meanwhile
+      if (!issue) throw new Error('no embedded issue payload');
+      renderIssue(issue, href);
+      body.scrollTop = 0;
+    } catch (err) {
+      if (seq !== openSeq) return;
+      // Graceful fallback: just navigate to the issue.
+      console.warn('[gisp] falling back to normal navigation:', err);
+      location.href = href;
+    }
+  }
+
   function closePanel() {
     if (root) root.classList.remove('gisp-open');
   }
 
-  // ---- Data extraction ----
+  // --------------------------------------------------------- Data extraction
 
-  // The issue page embeds its GraphQL payload as JSON for React hydration.
-  // Find the <script data-target="react-app.embeddedData"> that contains
+  // The issue page embeds its GraphQL payload as JSON for React hydration in
+  // <script data-target="react-app.embeddedData">. Find the one containing
   // repository.issue.
-  function extractItem(html) {
+  function extractIssue(html) {
     const doc = new DOMParser().parseFromString(html, 'text/html');
     const scripts = doc.querySelectorAll(
       'script[type="application/json"][data-target="react-app.embeddedData"]'
@@ -142,7 +188,35 @@
     return null;
   }
 
-  // ---- Rendering ----
+  // Comments are spread over the head/tail of the preloaded timeline.
+  function collectComments(issue) {
+    const seen = new Set();
+    const comments = [];
+    for (const tl of [issue.frontTimelineItems, issue.backTimelineItems]) {
+      for (const edge of tl?.edges || []) {
+        const n = edge?.node;
+        if (!n || n.__typename !== 'IssueComment') continue;
+        if (seen.has(n.id) || n.isHidden) continue;
+        seen.add(n.id);
+        comments.push(n);
+      }
+    }
+    comments.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+    return comments;
+  }
+
+  // Org-level issue fields; shape is defensive since it isn't documented.
+  function issueFields(issue) {
+    return (issue.issueFieldValues?.nodes || [])
+      .map((n) => {
+        const name = n?.field?.name;
+        const value = n?.name ?? n?.text ?? n?.title ?? n?.number ?? n?.date ?? n?.value;
+        return name && value != null ? { name, value: String(value) } : null;
+      })
+      .filter(Boolean);
+  }
+
+  // ---------------------------------------------------------------- Rendering
 
   const esc = (s) =>
     String(s ?? '').replace(/[&<>"']/g, (c) => ({
@@ -163,21 +237,23 @@
     skip: '<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0ZM1.5 8c0 1.44.468 2.767 1.26 3.842L11.842 2.76A6.47 6.47 0 0 0 8 1.5 6.5 6.5 0 0 0 1.5 8Zm13 0c0-1.44-.468-2.767-1.26-3.842L4.158 13.24A6.471 6.471 0 0 0 8 14.5 6.5 6.5 0 0 0 14.5 8Z"></path></svg>',
   };
 
-  function stateBadge(issue) {
-    const st = issue.state;
-    const reason = issue.stateReason;
-    if (st === 'OPEN')
-      return `<span class="gisp-state gisp-state-open">${ICONS.open} Open</span>`;
-    if (reason === 'NOT_PLANNED' || reason === 'DUPLICATE')
-      return `<span class="gisp-state gisp-state-notplanned">${ICONS.skip} Closed</span>`;
-    return `<span class="gisp-state gisp-state-closed">${ICONS.closed} Closed</span>`;
-  }
-
-  // Issue type colors are a GraphQL enum, not hex values.
+  // Issue type / project single-select colors are a GraphQL enum, not hex.
   const TYPE_COLORS = {
     BLUE: '#0969da', GREEN: '#1a7f37', ORANGE: '#bc4c00', RED: '#cf222e',
     PURPLE: '#8250df', PINK: '#bf3989', YELLOW: '#9a6700', GRAY: '#59636e',
   };
+
+  function stateBadge(issue) {
+    if (issue.state === 'OPEN')
+      return `<span class="gisp-state gisp-state-open">${ICONS.open} Open</span>`;
+    if (issue.stateReason === 'NOT_PLANNED' || issue.stateReason === 'DUPLICATE')
+      return `<span class="gisp-state gisp-state-notplanned">${ICONS.skip} Closed</span>`;
+    return `<span class="gisp-state gisp-state-closed">${ICONS.closed} Closed</span>`;
+  }
+
+  function labelChip(l) {
+    return `<span class="gisp-label" style="--gisp-label-color:#${esc(l.color)}">${l.nameHTML || esc(l.name)}</span>`;
+  }
 
   function typeChip(t) {
     if (!t?.name) return '';
@@ -185,47 +261,15 @@
     return `<span class="gisp-label" style="--gisp-label-color:${color}" title="${esc(t.description || '')}">${esc(t.name)}</span>`;
   }
 
-  // Project single-select values (e.g. Status) use the same color enum.
   function fieldChip(v) {
     if (!v?.name) return '';
     const color = TYPE_COLORS[v.color] || TYPE_COLORS.GRAY;
     return `<span class="gisp-label" style="--gisp-label-color:${color}">${esc(v.name)}</span>`;
   }
 
-  // Org-level issue fields; shape is defensive since it isn't documented.
-  function issueFields(issue) {
-    return (issue.issueFieldValues?.nodes || [])
-      .map((n) => {
-        const name = n?.field?.name;
-        const value = n?.name ?? n?.text ?? n?.title ?? n?.number ?? n?.date ?? n?.value;
-        return name && value != null ? { name, value: String(value) } : null;
-      })
-      .filter(Boolean);
-  }
-
-  function labelChip(l) {
-    return `<span class="gisp-label" style="--gisp-label-color:#${esc(l.color)}">${l.nameHTML || esc(l.name)}</span>`;
-  }
-
   function avatar(actor) {
     if (!actor?.avatarUrl) return '';
     return `<img class="gisp-avatar" src="${esc(actor.avatarUrl)}" alt="" width="20" height="20">`;
-  }
-
-  function collectComments(issue) {
-    const seen = new Set();
-    const comments = [];
-    for (const tl of [issue.frontTimelineItems, issue.backTimelineItems]) {
-      for (const edge of tl?.edges || []) {
-        const n = edge?.node;
-        if (!n || n.__typename !== 'IssueComment') continue;
-        if (seen.has(n.id) || n.isHidden) continue;
-        seen.add(n.id);
-        comments.push(n);
-      }
-    }
-    comments.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
-    return comments;
   }
 
   function commentBox(actor, dateLabel, bodyHTML) {
@@ -249,13 +293,51 @@
       </div>`;
   }
 
-  function renderIssue(issue, href) {
+  function renderSidebar(issue) {
     const labels = (issue.labels?.edges || []).map((e) => e.node).filter(Boolean);
     const assignees = issue.assignedActors?.nodes || [];
     const projectItems = (issue.projectItems?.edges || [])
       .map((e) => e?.node)
       .filter((n) => n?.project?.title && !n.isArchived);
     const fields = issueFields(issue);
+
+    return (
+      sideSection(
+        'Assignees',
+        assignees
+          .map((a) => `<div class="gisp-side-item">${avatar(a)} ${esc(a.login)}</div>`)
+          .join('')
+      ) +
+      sideSection(
+        'Labels',
+        labels.length ? `<div class="gisp-labels">${labels.map(labelChip).join('')}</div>` : ''
+      ) +
+      sideSection('Type', typeChip(issue.issueType)) +
+      sideSection(
+        'Projects',
+        projectItems
+          .map((n) => {
+            const p = n.project;
+            const link = p.url ? `<a href="${esc(p.url)}">${esc(p.title)}</a>` : esc(p.title);
+            const status = n.fieldValueByName ? ` ${fieldChip(n.fieldValueByName)}` : '';
+            return `<div class="gisp-side-item">${link}${status}</div>`;
+          })
+          .join('')
+      ) +
+      sideSection(
+        'Milestone',
+        issue.milestone ? `<div class="gisp-side-item">${esc(issue.milestone.title)}</div>` : ''
+      ) +
+      sideSection(
+        'Fields',
+        fields
+          .map((f) => `<div class="gisp-side-item">${esc(f.name)}: <b>${esc(f.value)}</b></div>`)
+          .join('')
+      )
+    );
+  }
+
+  function renderIssue(issue, href) {
     const comments = collectComments(issue);
     const author = issue.author || {};
 
@@ -278,36 +360,7 @@
         ? `<div class="gisp-truncated"><a href="${esc(href)}" data-gisp-nav="page">View full timeline on the issue page &#8599;</a></div>`
         : '';
 
-    // Right-hand sidebar, like the real issue page. Empty sections are omitted.
-    const sidebar =
-      sideSection(
-        'Assignees',
-        assignees
-          .map((a) => `<div class="gisp-side-item">${avatar(a)} ${esc(a.login)}</div>`)
-          .join('')
-      ) +
-      sideSection('Labels', labels.length ? `<div class="gisp-labels">${labels.map(labelChip).join('')}</div>` : '') +
-      sideSection('Type', typeChip(issue.issueType)) +
-      sideSection(
-        'Projects',
-        projectItems
-          .map((n) => {
-            const p = n.project;
-            const link = p.url
-              ? `<a href="${esc(p.url)}">${esc(p.title)}</a>`
-              : esc(p.title);
-            const status = n.fieldValueByName ? ` ${fieldChip(n.fieldValueByName)}` : '';
-            return `<div class="gisp-side-item">${link}${status}</div>`;
-          })
-          .join('')
-      ) +
-      sideSection('Milestone', issue.milestone ? `<div class="gisp-side-item">${esc(issue.milestone.title)}</div>` : '') +
-      sideSection(
-        'Fields',
-        fields
-          .map((f) => `<div class="gisp-side-item">${esc(f.name)}: <b>${esc(f.value)}</b></div>`)
-          .join('')
-      );
+    const sidebar = renderSidebar(issue);
 
     body.innerHTML = `
       <div class="gisp-issue">
@@ -330,45 +383,13 @@
       </div>`;
   }
 
-  // ---- Open flow ----
+  // ------------------------------------------------------------ Click handler
 
-  let openSeq = 0;
-
-  // opts.reset: fresh browsing session (opened from the page, not the panel)
-  // opts.pushCurrent: keep the current issue on the back stack
-  async function openPanel(href, opts = {}) {
-    ensurePanel();
-    if (opts.reset) hist = [];
-    else if (opts.pushCurrent && currentHref && currentHref !== href) hist.push(currentHref);
-    currentHref = href;
-    backBtn.hidden = hist.length === 0;
-
-    const seq = ++openSeq;
-    fullLink.href = href;
-    body.innerHTML = '<div class="gisp-loading"><div class="gisp-spinner"></div></div>';
-    root.classList.add('gisp-open');
-
-    try {
-      const res = await fetch(href, { headers: { Accept: 'text/html' } });
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      const issue = extractItem(await res.text());
-      if (seq !== openSeq) return; // another issue was opened meanwhile
-      if (!issue) throw new Error('no embedded issue payload');
-      renderIssue(issue, href);
-      body.scrollTop = 0;
-    } catch (err) {
-      if (seq !== openSeq) return;
-      // Graceful fallback: just navigate to the issue.
-      console.warn('[gisp] falling back to normal navigation:', err);
-      location.href = href;
-    }
-  }
-
-  // ---- Click interception (capture phase, ahead of GitHub's SPA router) ----
+  // Capture phase, so we run ahead of GitHub's SPA router.
   document.addEventListener(
     'click',
     (e) => {
-      if (!state.enabled) return;
+      if (!settings.enabled) return;
       if (e.defaultPrevented) return;
       // Modifier / non-left clicks keep their normal behavior (new tab etc.)
       if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
@@ -387,9 +408,8 @@
         return;
       }
       if (url.origin !== location.origin) return;
-      if (!ITEM_PATH_RE.test(url.pathname)) return;
-      // Self-links on the item's own page (comment anchors, PR tab links)
-      // behave normally.
+      if (!ISSUE_PATH_RE.test(url.pathname)) return;
+      // Self-links on the item's own page (comment anchors etc.) behave normally.
       if (ctx === 'page' && itemKey(url.pathname) === itemKey(location.pathname)) return;
 
       e.preventDefault();
