@@ -24,16 +24,22 @@
     if ('panelWidth' in changes) state.width = changes.panelWidth.newValue;
   });
 
-  const ISSUE_PATH_RE = /^\/[^/]+\/[^/]+\/issues\/\d+$/;
+  const ITEM_PATH_RE = /^\/[^/]+\/[^/]+\/(issues|pull)\/\d+$/;
+
+  // "owner/repo#number" — identifies an issue/PR regardless of tab suffix.
+  function itemKey(pathname) {
+    const m = pathname.match(/^\/([^/]+)\/([^/]+)\/(?:issues|pull)\/(\d+)/);
+    return m ? `${m[1]}/${m[2]}#${m[3]}` : null;
+  }
 
   // Where interception applies. Checked at click time because GitHub is an
-  // SPA: issue lists, the global issues dashboard, issue pages (linked
-  // issues, sub-issues, ...), and links inside the panel itself.
+  // SPA: issue/PR lists, the dashboards, issue/PR pages (linked issues,
+  // sub-issues, ...), and links inside the panel itself.
   function interceptionContext(a) {
     if (root && root.contains(a)) return 'panel';
     const p = location.pathname.replace(/\/$/, '');
-    if (p === '/issues' || /^\/[^/]+\/[^/]+\/issues$/.test(p)) return 'list';
-    if (ISSUE_PATH_RE.test(p)) return 'issue-page';
+    if (p === '/issues' || p === '/pulls' || /^\/[^/]+\/[^/]+\/(issues|pulls)$/.test(p)) return 'list';
+    if (/^\/[^/]+\/[^/]+\/(issues|pull)\/\d+(\/|$)/.test(p)) return 'page';
     return null;
   }
 
@@ -111,27 +117,93 @@
 
   // ---- Data extraction ----
 
-  // The issue page embeds its GraphQL payload as JSON for React hydration.
-  // Find the <script data-target="react-app.embeddedData"> that contains
-  // repository.issue.
-  function extractIssue(html) {
+  // Issue/PR pages embed JSON payloads for React hydration in
+  // <script data-target="react-app.embeddedData">. Issues ship a full
+  // preloaded GraphQL query; PR pages may only ship route metadata.
+  function extractItem(html) {
     const doc = new DOMParser().parseFromString(html, 'text/html');
     const scripts = doc.querySelectorAll(
       'script[type="application/json"][data-target="react-app.embeddedData"]'
     );
     for (const s of scripts) {
+      let payload;
       try {
-        const data = JSON.parse(s.textContent);
-        const queries = data?.payload?.preloadedQueries || [];
-        for (const q of queries) {
-          const issue = q?.result?.data?.repository?.issue;
-          if (issue && issue.bodyHTML !== undefined) return issue;
-        }
+        payload = JSON.parse(s.textContent)?.payload;
       } catch (_) {
-        /* try next script */
+        continue;
       }
+      if (!payload) continue;
+
+      // 1) Issue viewer: preloaded GraphQL query with full content
+      for (const q of payload.preloadedQueries || []) {
+        const d = q?.result?.data?.repository;
+        const item = d?.issue || d?.pullRequest;
+        if (item && item.bodyHTML !== undefined) {
+          return d?.pullRequest ? { ...item, __gispPR: true } : item;
+        }
+      }
+
+      // 2) Relay store records (PR pages, when preloaded for the viewer)
+      const rec = relayToItem(payload.preloaded_records);
+      if (rec) return rec;
+
+      // 3) PR layout route: metadata only (body/comments load client-side)
+      const meta = payload.pullRequestsLayoutRoute?.pullRequest;
+      if (meta) return prMetaToItem(meta);
     }
     return null;
+  }
+
+  function relayToItem(records) {
+    if (!records || typeof records !== 'object') return null;
+    const vals = Object.values(records).filter((r) => r && typeof r === 'object');
+    const deref = (v) => (v && v.__ref ? records[v.__ref] : v);
+    const pr = vals.find(
+      (r) => r.__typename === 'PullRequest' && typeof r.bodyHTML === 'string'
+    );
+    if (!pr) return null;
+    const comments = vals
+      .filter((r) => r.__typename === 'IssueComment' && typeof r.bodyHTML === 'string')
+      .map((c) => ({ ...c, __typename: 'IssueComment', author: deref(c.author), id: c.__id || c.id }));
+    return {
+      ...pr,
+      __gispPR: true,
+      author: deref(pr.author),
+      frontTimelineItems: { edges: comments.map((n) => ({ node: n })), totalCount: comments.length },
+      backTimelineItems: null,
+      labels: null,
+      assignedActors: null,
+      projectItems: null,
+      issueType: null,
+      milestone: null,
+    };
+  }
+
+  function prMetaToItem(meta) {
+    return {
+      __gispPR: true,
+      __gispMetaOnly: true,
+      title: meta.title,
+      titleHTML: meta.titleHtml,
+      number: meta.number,
+      state: meta.mergedTime ? 'MERGED' : meta.state,
+      stateReason: null,
+      author: { login: meta.author?.login, avatarUrl: meta.author?.avatarUrl },
+      createdAt: meta.createdTime,
+      bodyHTML: null,
+      labels: null,
+      assignedActors: null,
+      projectItems: null,
+      issueType: null,
+      milestone: null,
+      frontTimelineItems: null,
+      backTimelineItems: null,
+      __gispBranches: {
+        base: meta.baseBranch,
+        head: meta.headBranch,
+        commits: meta.commitsCount,
+      },
+    };
   }
 
   // ---- Rendering ----
@@ -151,10 +223,24 @@
   function stateBadge(issue) {
     const st = issue.state;
     const reason = issue.stateReason;
+    if (st === 'MERGED') return '<span class="gisp-state gisp-state-merged">Merged</span>';
     if (st === 'OPEN') return '<span class="gisp-state gisp-state-open">Open</span>';
+    if (issue.__gispPR) return '<span class="gisp-state gisp-state-closedpr">Closed</span>';
     if (reason === 'NOT_PLANNED' || reason === 'DUPLICATE')
       return '<span class="gisp-state gisp-state-notplanned">Closed</span>';
     return '<span class="gisp-state gisp-state-closed">Closed</span>';
+  }
+
+  // Issue type colors are a GraphQL enum, not hex values.
+  const TYPE_COLORS = {
+    BLUE: '#0969da', GREEN: '#1a7f37', ORANGE: '#bc4c00', RED: '#cf222e',
+    PURPLE: '#8250df', PINK: '#bf3989', YELLOW: '#9a6700', GRAY: '#59636e',
+  };
+
+  function typeChip(t) {
+    if (!t?.name) return '';
+    const color = TYPE_COLORS[t.color] || TYPE_COLORS.GRAY;
+    return `<span class="gisp-label" style="--gisp-label-color:${color}" title="${esc(t.description || '')}">${esc(t.name)}</span>`;
   }
 
   function labelChip(l) {
@@ -185,6 +271,9 @@
   function renderIssue(issue, href) {
     const labels = (issue.labels?.edges || []).map((e) => e.node).filter(Boolean);
     const assignees = issue.assignedActors?.nodes || [];
+    const projects = (issue.projectItems?.edges || [])
+      .map((e) => e?.node?.project)
+      .filter((p) => p?.title);
     const comments = collectComments(issue);
     const author = issue.author || {};
 
@@ -220,18 +309,43 @@
           ${stateBadge(issue)}
           ${avatar(author)}
           <b>${esc(author.login || 'ghost')}</b>
-          <span class="gisp-muted">opened on ${fmtDate(issue.createdAt)}
-            &middot; ${comments.length} comment${comments.length === 1 ? '' : 's'}</span>
+          <span class="gisp-muted">opened on ${fmtDate(issue.createdAt)}${
+            issue.__gispMetaOnly
+              ? ''
+              : ` &middot; ${comments.length} comment${comments.length === 1 ? '' : 's'}`
+          }</span>
         </div>
-        ${labels.length ? `<div class="gisp-labels">${labels.map(labelChip).join('')}</div>` : ''}
+        ${
+          issue.__gispBranches
+            ? `<div class="gisp-branches gisp-muted"><code>${esc(issue.__gispBranches.base)}</code>
+                &larr; <code>${esc(issue.__gispBranches.head)}</code>
+                &middot; ${issue.__gispBranches.commits} commit${issue.__gispBranches.commits === 1 ? '' : 's'}</div>`
+            : ''
+        }
+        ${
+          issue.issueType?.name || labels.length
+            ? `<div class="gisp-labels">${typeChip(issue.issueType)}${labels.map(labelChip).join('')}</div>`
+            : ''
+        }
         ${
           assignees.length
             ? `<div class="gisp-assignees gisp-muted">Assignees:
                 ${assignees.map((a) => `${avatar(a)} ${esc(a.login)}`).join(' ')}</div>`
             : ''
         }
-        ${issue.milestone ? `<div class="gisp-muted">Milestone: ${esc(issue.milestone.title)}</div>` : ''}
-        <div class="markdown-body gisp-md gisp-issue-body">${issue.bodyHTML || '<i>No description provided.</i>'}</div>
+        ${
+          projects.length
+            ? `<div class="gisp-assignees gisp-muted">Projects:
+                ${projects.map((p) => (p.url ? `<a href="${esc(p.url)}">${esc(p.title)}</a>` : esc(p.title))).join(', ')}</div>`
+            : ''
+        }
+        ${issue.milestone ? `<div class="gisp-assignees gisp-muted">Milestone: ${esc(issue.milestone.title)}</div>` : ''}
+        ${
+          issue.__gispMetaOnly
+            ? `<div class="gisp-note">The pull request conversation isn't preloaded by GitHub, so it can't be shown here.
+                <a href="${esc(href)}" data-gisp-nav="page">Open full page &#8599;</a></div>`
+            : `<div class="markdown-body gisp-md gisp-issue-body">${issue.bodyHTML || '<i>No description provided.</i>'}</div>`
+        }
         ${commentHtml}
         ${truncated}
       </div>`;
@@ -258,7 +372,7 @@
     try {
       const res = await fetch(href, { headers: { Accept: 'text/html' } });
       if (!res.ok) throw new Error('HTTP ' + res.status);
-      const issue = extractIssue(await res.text());
+      const issue = extractItem(await res.text());
       if (seq !== openSeq) return; // another issue was opened meanwhile
       if (!issue) throw new Error('no embedded issue payload');
       renderIssue(issue, href);
@@ -294,9 +408,10 @@
         return;
       }
       if (url.origin !== location.origin) return;
-      if (!ISSUE_PATH_RE.test(url.pathname)) return;
-      // On an issue page, self-links (e.g. comment anchors) behave normally.
-      if (ctx === 'issue-page' && url.pathname === location.pathname) return;
+      if (!ITEM_PATH_RE.test(url.pathname)) return;
+      // Self-links on the item's own page (comment anchors, PR tab links)
+      // behave normally.
+      if (ctx === 'page' && itemKey(url.pathname) === itemKey(location.pathname)) return;
 
       e.preventDefault();
       e.stopPropagation();
